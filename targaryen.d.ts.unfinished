@@ -1,0 +1,45 @@
+class Targaryen {
+    database() {
+
+    }
+
+    store() {
+
+    }
+
+    ruleset() {
+
+    }
+}
+
+type DatabaseOptions = {};
+
+type RuleDataSnapshot = {
+    val(): any;
+    
+};
+
+type Result = {};
+
+type DatabaseUpdates = {
+    rules?: Object,
+    data?: Object,
+    auth?: Object
+    now?: any,
+    debug?: boolean
+};
+
+type Database = {
+    constructor(opts: DatabaseOptions);
+    with(updates: DatabaseUpdates): Database;
+    as(auth: Object): Database;
+    snapshot(path?: string): RuleDataSnapshot;
+    walk(path: string, callback: (snapshot: RuleDataSnapshot) => bool);
+    read(path: string, now: number): Result;
+    write(path: string, value: any, priority: any, now?: number): Result;
+    update(path: string, patch: Object, now?: number): {info: string, allowed: boolean};
+}
+
+type DatabaseModule = {
+    create(rules: Object, data: Object, now: number)
+}

@@ -1,0 +1,19 @@
+{
+  "name": "firebase-mock",
+  "version": "0.0.1",
+  "description": "Firebase mock to use for testing",
+  "main": "index.js",
+  "author": "aviv@soluto.com",
+  "license": "MIT",
+  "dependencies": {
+    "targaryen": "^3.0.1"
+  },
+  "devDependencies": {
+    "@types/core-js": "^0.9.41",
+    "@types/node": "^7.0.18",
+    "typescript": "^2.3.2"
+  },
+  "scripts": {
+    "build": "tsc"
+  }
+}
