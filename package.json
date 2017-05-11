@@ -6,11 +6,13 @@
   "author": "aviv@soluto.com",
   "license": "MIT",
   "dependencies": {
+    "ramda": "^0.23.0",
     "targaryen": "^3.0.1"
   },
   "devDependencies": {
     "@types/core-js": "^0.9.41",
     "@types/node": "^7.0.18",
+    "@types/ramda": "^0.0.9",
     "typescript": "^2.3.2"
   },
   "scripts": {

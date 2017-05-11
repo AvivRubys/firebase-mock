@@ -1,5 +1,6 @@
 import * as targaryen from 'targaryen';
 import * as nodePath from 'path';
+import * as R from 'ramda';
 
 function emptyFunction () {}
 
@@ -12,6 +13,7 @@ namespace Targaryen {
         read(path: string, now?: number): Result;
         write(path: string, value: any, priority?: any, now?: number): Result;
         update(path: string, patch: Object, now?: number): Result;
+        root: DataNode
     }
 
     export type Result = {
@@ -20,8 +22,14 @@ namespace Targaryen {
         permitted: boolean,
         validated: boolean,
         database: Database,
-        newDatabase: Database,
-        newValue: any
+        newDatabase?: Database,
+        newValue?: any
+    }
+
+    export type DataNode = {
+        $priority(): any;
+        $value(): any;
+        $isNull(): boolean;
     }
 }
 
@@ -87,28 +95,13 @@ namespace firebase {
 }
 
 namespace firebase.app {
-    const DEFAULT_RULES = {
-        rules: {
-            '.write': 'true',
-            '.read': 'true'
-        }
-    };
-    const DEFAULT_DATA = {};
-
     export class App {
         private _auth: firebase.auth.Auth;
         private _database: firebase.database.Database;
-        public mockDatabase: Targaryen.Database;
 
         constructor(private _options: FirebaseOptions, private _name: string) {
             this._auth = new firebase.auth.Auth(this);
             this._database = new firebase.database.Database(this);
-            this.mockDatabase = targaryen.database(DEFAULT_RULES, DEFAULT_DATA);
-
-            // TODO: Dispose
-            this._auth.onAuthStateChanged((user) => {
-                this.mockDatabase = this.mockDatabase.as(user);
-            })
         }
 
         get name(): string {
@@ -276,6 +269,14 @@ namespace firebase.auth {
 }
 
 namespace firebase.database {
+    const DEFAULT_RULES = {
+        rules: {
+            '.write': 'true',
+            '.read': 'true'
+        }
+    };
+    const DEFAULT_DATA = {};
+
     type EventType = 
         | 'value'
         | 'child_added'
@@ -283,8 +284,32 @@ namespace firebase.database {
         | 'child_changed'
         | 'child_moved';
 
+    function readData(database: Targaryen.Database, path: string) {
+        const pathLens = R.lensPath(path.split('/').filter(Boolean))
+        return R.view(pathLens, database.root.$value())
+    }
+
+    function createError(result: Targaryen.Result) {
+        return new Error(
+            `Update operation failed. Permitted: ${result.permitted}. Validated: ${result.validated}`
+        );
+    }
+
     export class Database {
-        constructor(private _app: firebase.app.App) {}
+        private database: Targaryen.Database;
+
+        constructor(private _app: firebase.app.App) {
+            this.database = targaryen.database(DEFAULT_RULES, DEFAULT_DATA);
+        }
+
+        withDatabase(action: (db: Targaryen.Database) => Targaryen.Result) {
+            const result = action(this.database);
+            if (result.newDatabase) {
+                this.database = result.newDatabase;
+            }
+
+            return result;
+        }
 
         get app() {
             return this._app;
@@ -310,16 +335,44 @@ namespace firebase.database {
     class Query {
         constructor(protected database: Database, protected path: string) {}
 
-        on(eventType: EventType, callback: (snapshot: DataSnapshot) => void, cancelCallbackOrContext?: Object | ((error: Error) => void), context?: Object) {
+        on(eventType: EventType, callback: (snapshot: DataSnapshot) => void) {
             throw new NotImplementedError();
         }
         
-        off(eventType: EventType, callback: (snapshot: DataSnapshot) => void, context?: Object) {
+        off(eventType: EventType, callback: (snapshot: DataSnapshot) => void) {
             throw new NotImplementedError();
         }
 
-        once(eventType: EventType, sucessCallback: (snapshot: DataSnapshot) => void, failureCallbackOrContext?: Object | ((error: Error) => void), context?: Object): Promise<DataSnapshot> {
-            throw new NotImplementedError();
+        once(eventType: EventType): Promise<DataSnapshot> {
+            switch(eventType) {
+                case 'value': {
+                    const result = this.database.withDatabase(db => db.read(this.path));
+                    if (result.permitted && result.validated) {
+                        return Promise.resolve(new DataSnapshot(this.path, readData(result.database, this.path)))
+                    } else {
+                        return Promise.reject(createError(result))
+                    }
+                }
+                case 'child_added': {
+                    const result = this.database.withDatabase(db => db.read(this.path));
+                    if (result.permitted && result.validated) {
+                        const data = readData(result.database, this.path);
+                        if (typeof data === 'object') {
+                            return Promise.resolve(new DataSnapshot(this.path, data[Object.keys(data)[0]]))
+                        } else {
+                            // TODO: What do we do here?
+                        }
+                    } else {
+                        return Promise.reject(createError(result))
+                    }
+                }
+                case 'child_removed':
+                    throw new NotImplementedError();
+                case 'child_changed':
+                    throw new NotImplementedError();
+                case 'child_moved':
+                    throw new NotImplementedError();
+            }
         }
     }
 
@@ -332,30 +385,25 @@ namespace firebase.database {
             return new Reference(this.database, nodePath.join(this.path, path));
         }
 
-        push<T>(value?: T, onComplete?: (error?: Error) => void): ThenableReference {
+        push<T>(value?: T): ThenableReference {
             throw new NotImplementedError();
         }
 
-        remove(onComplete?: (error?: Error) => void): Promise<void> {
-            return this.set(null, onComplete);
+        remove(): Promise<void> {
+            return this.set(null);
         }
 
-        set<T>(value: T, onComplete?: (error?: Error) => void): Promise<void> {
-            return this.setWithPriority(value, null, onComplete);
+        set<T>(value: T): Promise<void> {
+            return this.setWithPriority(value, null);
         }
 
-        setWithPriority<T>(value: T, newPriority: (string | number | null), onComplete: (error?: Error) => void = emptyFunction): Promise<void> {
-            const result = this.database.app.mockDatabase.write(this.path, value, newPriority);
-            this.database.app.mockDatabase = result.newDatabase;
+        setWithPriority<T>(value: T, newPriority: (string | number | null)): Promise<void> {
+            const result = this.database.withDatabase(db => db.write(this.path, value, newPriority));
+
             if (result.permitted && result.validated) {
-                onComplete();
                 return Promise.resolve();
             } else {
-                const error = new Error(
-                    `Set operation failed. Permitted: ${result.permitted}. Validated: ${result.validated}`
-                );
-                onComplete(error)
-                return Promise.reject(error)
+                return Promise.reject(createError(result))
             }
         }
 
@@ -367,18 +415,13 @@ namespace firebase.database {
             throw new NotImplementedError();
         }
 
-        update(patch: Object, onComplete: (error?: Error) => void = emptyFunction): Promise<void> {
-            const result = this.database.app.mockDatabase.update(this.path, patch);
-            this.database.app.mockDatabase = result.newDatabase;
+        update(patch: Object): Promise<void> {
+            const result = this.database.withDatabase(db => db.update(this.path, patch));
+
             if (result.permitted && result.validated) {
-                onComplete();
                 return Promise.resolve();
             } else {
-                const error = new Error(
-                    `Update operation failed. Permitted: ${result.permitted}. Validated: ${result.validated}`
-                );
-                onComplete(error)
-                return Promise.reject(error)
+                return Promise.reject(createError(result))
             }
         }
     }
