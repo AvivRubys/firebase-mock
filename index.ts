@@ -1,7 +1,34 @@
 import * as targaryen from 'targaryen';
 import * as nodePath from 'path';
 
+function emptyFunction () {}
+
 class NotImplementedError extends Error {}
+
+namespace Targaryen {
+    export type Database = {
+        with(options: {rules: Object, data: any, auth?: Object, now?: number, debug?: boolean}): Database;
+        as(auth: object | null): Database;
+        read(path: string, now?: number): Result;
+        write(path: string, value: any, priority?: any, now?: number): Result;
+        update(path: string, patch: Object, now?: number): Result;
+    }
+
+    export type Result = {
+        path: string,
+        auth: Object | null,
+        permitted: boolean,
+        validated: boolean,
+        database: Database,
+        newDatabase: Database,
+        newValue: any
+    }
+}
+
+type TargaryenStatic = {
+    database(rules: Object, data: Object, now?: number): Targaryen.Database;
+}
+
 
 type FirebaseOptions = {
     apiKey?: string
@@ -38,29 +65,23 @@ class Firebase {
 }
 
 namespace firebase {
-    export class User {
-        get displayName(): string | null {
-            throw new NotImplementedError();
-        }
+    export type UserInfo = {
+        displayName?: string,
+        email?: string,
+        photoURL?: string,
+        providerId: string,
+        uid: string
+    }
 
-        get email(): string | null {
-            throw new NotImplementedError();
-        }
+    export class User implements UserInfo {
+        public displayName?: string;
+        public email?: string;
+        public photoURL?: string;
+        public providerId: string;
+        public uid: string;
 
-        get emailVerified(): boolean {
-            throw new NotImplementedError();
-        }
-
-        get isAnonymous(): boolean {
-            throw new NotImplementedError();
-        }
-
-        get photoURL(): string | null {
-            throw new NotImplementedError();
-        }
-
-        get uid(): string | null {
-            throw new NotImplementedError();
+        constructor(userInfo: UserInfo) {
+            Object.assign(this, userInfo);
         }
     }
 }
@@ -73,17 +94,21 @@ namespace firebase.app {
         }
     };
     const DEFAULT_DATA = {};
-    const DEFAULT_AUTH = null;
-    
+
     export class App {
         private _auth: firebase.auth.Auth;
         private _database: firebase.database.Database;
-        private _firebase: targaryen;
+        public mockDatabase: Targaryen.Database;
 
         constructor(private _options: FirebaseOptions, private _name: string) {
             this._auth = new firebase.auth.Auth(this);
-            this._database = new firebase.database.Database();
-            this._firebase = targaryen.database();
+            this._database = new firebase.database.Database(this);
+            this.mockDatabase = targaryen.database(DEFAULT_RULES, DEFAULT_DATA);
+
+            // TODO: Dispose
+            this._auth.onAuthStateChanged((user) => {
+                this.mockDatabase = this.mockDatabase.as(user);
+            })
         }
 
         get name(): string {
@@ -94,7 +119,7 @@ namespace firebase.app {
             return this._options;
         }
 
-        public auth(): firebase.auth.Auth {
+        auth(): firebase.auth.Auth {
             return this._auth;
         }
 
@@ -120,27 +145,132 @@ namespace firebase.auth {
         complete(): void;
     };
 
+    type AuthProvider = {
+        providerId: string
+    }
+
+    class AuthCredential {
+        constructor(public provider: string, public credentials: Object) {}
+    }
+
+    export class EmailAuthProvider implements AuthProvider {
+        public providerId = "email"
+
+        static credential(email: string, password: string) {
+            return new AuthCredential("email", {email, password});
+        }
+    }
+
+    export class FacebookAuthProvider implements AuthProvider {
+        public providerId = "facebook"
+
+        static credential(token: string) {
+            return new AuthCredential("facebook", {token});
+        }
+    }
+
+    export class GithubAuthProvider implements AuthProvider {
+        public providerId = "github"
+
+        static credential(token: string) {
+            return new AuthCredential("github", {token});
+        }
+    }
+
+    export class GoogleAuthProvider implements AuthProvider {
+        public providerId = "google"
+
+        static credential(token: string) {
+            return new AuthCredential("google", {token});
+        }
+    }
+
+    export class TwitterAuthProvider implements AuthProvider {
+        public providerId = "twitter"
+
+        static credential(token: string, secret: string) {
+            return new AuthCredential("twitter", {token, secret});
+        }
+    }
+
     export class Auth {
+        public customTokenSignInHandler: ((token: string) => firebase.UserInfo) | null = null;
+        public credentialSignInHandler: ((credential: AuthCredential) => firebase.UserInfo) | null = null;
+
+        private _currentUser: firebase.User | null = null;
+        private _authStateObserver: Observer<firebase.User | null>[] = [];
+        
         constructor(private app: firebase.app.App) {}
 
-        get currentUser(): firebase.User {
-            throw new NotImplementedError();
+        get currentUser(): firebase.User | null {
+            return this._currentUser;
+        }
+
+        private notifyAuthState() {
+            this._authStateObserver.forEach((observer) => {
+                observer.next(this._currentUser);
+            })
         }
 
         onAuthStateChanged(
             nextOrObserver: Observer<firebase.User | null> | ((user: firebase.User) => void),
-            error: (error: any) => void,
-            completed: () => void
-        ) {
-            throw new NotImplementedError();
+            error?: (error: any) => void,
+            complete?: () => void
+        ): () => void {
+            if (typeof nextOrObserver === 'object') {
+                this._authStateObserver.push(nextOrObserver);
+            } else {
+                this._authStateObserver.push({next: nextOrObserver || emptyFunction, error: error || emptyFunction, complete: complete || emptyFunction})
+            }
+
+            return () => this._authStateObserver.splice(this._authStateObserver.length - 1, 1);
+        }
+
+        signInWithCredential(credential: AuthCredential): Promise<firebase.User> {
+            if (!this.credentialSignInHandler) {
+                return Promise.reject(new Error(
+                    "Mock-firebase auth: signInWithCustomToken being used, while no credentialSignInHandler is defined"
+                ))
+            }
+
+            let userInfo: UserInfo;
+            try {
+                userInfo = this.credentialSignInHandler(credential);
+            } catch (error) {
+                return Promise.reject(error);
+            }
+            
+            const user = new firebase.User(userInfo);
+            this.notifyAuthState()
+            
+            return Promise.resolve(user);
         }
 
         signInWithCustomToken(token: string): Promise<firebase.User> {
-            throw new NotImplementedError();
+            if (!this.customTokenSignInHandler) {
+                return Promise.reject(new Error(
+                    "Mock-firebase auth: signInWithCustomToken being used, while no customTokenSignInHandler is defined"
+                ))
+            }
+
+            let userInfo: UserInfo;
+            try {
+                userInfo = this.customTokenSignInHandler(token);
+            } catch (error) {
+                return Promise.reject(error);
+            }
+            
+            const user = new firebase.User(userInfo);
+            this.notifyAuthState()
+
+            return Promise.resolve(user);
         }
 
         signOut(): Promise<void> {
-            throw new NotImplementedError();
+            this._currentUser = null;
+            this.notifyAuthState()
+
+            return Promise.resolve();
         }
     }
 }
@@ -154,6 +284,12 @@ namespace firebase.database {
         | 'child_moved';
 
     export class Database {
+        constructor(private _app: firebase.app.App) {}
+
+        get app() {
+            return this._app;
+        }
+
         goOffline() {
             throw new NotImplementedError();
         }
@@ -163,7 +299,7 @@ namespace firebase.database {
         }
 
         ref(path?: string) {
-            throw new NotImplementedError();
+            return new Reference(this, path || '');
         }
 
         refFromURL(url: string) {
@@ -172,7 +308,7 @@ namespace firebase.database {
     }
 
     class Query {
-        constructor() {}
+        constructor(protected database: Database, protected path: string) {}
 
         on(eventType: EventType, callback: (snapshot: DataSnapshot) => void, cancelCallbackOrContext?: Object | ((error: Error) => void), context?: Object) {
             throw new NotImplementedError();
@@ -188,12 +324,12 @@ namespace firebase.database {
     }
 
     class Reference extends Query {
-        constructor(private path: string, private parent: Reference) {
-            super();
+        constructor(database: Database, path: string) {
+            super(database, path);
         }
 
         child(path: string) {
-            return new Reference(nodePath.join(this.path, path), this);
+            return new Reference(this.database, nodePath.join(this.path, path));
         }
 
         push<T>(value?: T, onComplete?: (error?: Error) => void): ThenableReference {
@@ -201,15 +337,26 @@ namespace firebase.database {
         }
 
         remove(onComplete?: (error?: Error) => void): Promise<void> {
-            throw new NotImplementedError();
+            return this.set(null, onComplete);
         }
 
         set<T>(value: T, onComplete?: (error?: Error) => void): Promise<void> {
-            throw new NotImplementedError();
+            return this.setWithPriority(value, null, onComplete);
         }
 
-        setWithPriority<T>(value: T, newPriority: (string | number | null), onComplete?: (error?: Error) => void): Promise<void> {
-            throw new NotImplementedError();
+        setWithPriority<T>(value: T, newPriority: (string | number | null), onComplete: (error?: Error) => void = emptyFunction): Promise<void> {
+            const result = this.database.app.mockDatabase.write(this.path, value, newPriority);
+            this.database.app.mockDatabase = result.newDatabase;
+            if (result.permitted && result.validated) {
+                onComplete();
+                return Promise.resolve();
+            } else {
+                const error = new Error(
+                    `Set operation failed. Permitted: ${result.permitted}. Validated: ${result.validated}`
+                );
+                onComplete(error)
+                return Promise.reject(error)
+            }
         }
 
         transaction(
@@ -220,14 +367,25 @@ namespace firebase.database {
             throw new NotImplementedError();
         }
 
-        update(values: Object, onComplete?: (error?: Error) => void): Promise<void> {
-            throw new NotImplementedError();
+        update(patch: Object, onComplete: (error?: Error) => void = emptyFunction): Promise<void> {
+            const result = this.database.app.mockDatabase.update(this.path, patch);
+            this.database.app.mockDatabase = result.newDatabase;
+            if (result.permitted && result.validated) {
+                onComplete();
+                return Promise.resolve();
+            } else {
+                const error = new Error(
+                    `Update operation failed. Permitted: ${result.permitted}. Validated: ${result.validated}`
+                );
+                onComplete(error)
+                return Promise.reject(error)
+            }
         }
     }
 
     class ThenableReference extends Reference {
-        constructor(path: string, parent: Reference) {
-            super(path, parent);
+        constructor(database: Database, path: string) {
+            super(database, path);
         }
 
         then() {
@@ -236,12 +394,20 @@ namespace firebase.database {
     }
 
     class DataSnapshot {
-        get key(): string {
-            throw new NotImplementedError();
+        constructor(private path: string, private data: any) {}
+
+        get key(): string | null {
+            return (this.path === '') ? null : nodePath.basename(this.path)
         }
 
-        get ref(): Reference {
-            throw new NotImplementedError();
+        exists(): boolean {
+            return !!this.data;
+        }
+
+        val(): any {
+            return this.data;
         }
     }
 }
+
+export default Firebase;
